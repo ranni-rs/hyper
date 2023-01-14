@@ -17,6 +17,7 @@ pub(crate) struct Dispatcher<D, Bs: Body, I, T> {
     body_tx: Option<crate::body::Sender>,
     body_rx: Pin<Box<Option<Bs>>>,
     is_closing: bool,
+    last_write_at: i64,
 }
 
 pub(crate) trait Dispatch {
@@ -28,7 +29,10 @@ pub(crate) trait Dispatch {
         self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
     ) -> Poll<Option<Result<(Self::PollItem, Self::PollBody), Self::PollError>>>;
-    fn recv_msg(&mut self, msg: crate::Result<(Self::RecvItem, IncomingBody)>) -> crate::Result<()>;
+    fn recv_msg(
+        &mut self,
+        msg: crate::Result<(Self::RecvItem, IncomingBody, i64)>,
+    ) -> crate::Result<()>;
     fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), ()>>;
     fn should_poll(&self) -> bool;
 }
@@ -45,14 +49,14 @@ cfg_server! {
 cfg_client! {
     pin_project_lite::pin_project! {
         pub(crate) struct Client<B> {
-            callback: Option<crate::client::dispatch::Callback<Request<B>, http::Response<IncomingBody>>>,
+            callback: Option<crate::client::dispatch::Callback<Request<B>, (http::Response<IncomingBody>,i64)>>,
             #[pin]
             rx: ClientRx<B>,
             rx_closed: bool,
         }
     }
 
-    type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, http::Response<IncomingBody>>;
+    type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, (http::Response<IncomingBody>,i64)>;
 }
 
 impl<D, Bs, I, T> Dispatcher<D, Bs, I, T>
@@ -75,6 +79,7 @@ where
             body_tx: None,
             body_rx: Box::pin(None),
             is_closing: false,
+            last_write_at: 0,
         }
     }
 
@@ -249,7 +254,8 @@ where
                 let body = match body_len {
                     DecodedLength::ZERO => IncomingBody::empty(),
                     other => {
-                        let (tx, rx) = IncomingBody::new_channel(other, wants.contains(Wants::EXPECT));
+                        let (tx, rx) =
+                            IncomingBody::new_channel(other, wants.contains(Wants::EXPECT));
                         self.body_tx = Some(tx);
                         rx
                     }
@@ -263,7 +269,8 @@ where
                     );
                     head.extensions.insert(upgrade);
                 }
-                self.dispatch.recv_msg(Ok((head, body)))?;
+                self.dispatch
+                    .recv_msg(Ok((head, body, self.last_write_at)))?;
                 Poll::Ready(Ok(()))
             }
             Some(Err(err)) => {
@@ -361,11 +368,14 @@ where
                             }
                             self.conn.write_body(chunk);
                         }
+                        self.last_write_at = chrono::Local::now().timestamp_nanos();
                     } else {
                         *clear_body = true;
+                        self.last_write_at = chrono::Local::now().timestamp_nanos();
                         self.conn.end_body()?;
                     }
                 } else {
+                    self.last_write_at = chrono::Local::now().timestamp_nanos();
                     return Poll::Pending;
                 }
             }
@@ -591,12 +601,12 @@ cfg_client! {
             }
         }
 
-        fn recv_msg(&mut self, msg: crate::Result<(Self::RecvItem, IncomingBody)>) -> crate::Result<()> {
+        fn recv_msg(&mut self, msg: crate::Result<(Self::RecvItem, IncomingBody,i64)>) -> crate::Result<()> {
             match msg {
-                Ok((msg, body)) => {
+                Ok((msg, body,last_write_at)) => {
                     if let Some(cb) = self.callback.take() {
                         let res = msg.into_response(body);
-                        cb.send(Ok(res));
+                        cb.send(Ok((res,last_write_at)));
                         Ok(())
                     } else {
                         // Getting here is likely a bug! An error should have happened

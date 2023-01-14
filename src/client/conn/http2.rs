@@ -21,12 +21,14 @@ use crate::rt::{Executor, Timer};
 
 /// The sender side of an established connection.
 pub struct SendRequest<B> {
-    dispatch: dispatch::UnboundedSender<Request<B>, Response<IncomingBody>>,
+    dispatch: dispatch::UnboundedSender<Request<B>, (Response<IncomingBody>, i64)>,
 }
 
 impl<B> Clone for SendRequest<B> {
     fn clone(&self) -> SendRequest<B> {
-        SendRequest { dispatch: self.dispatch.clone() }
+        SendRequest {
+            dispatch: self.dispatch.clone(),
+        }
     }
 }
 
@@ -57,9 +59,7 @@ pub struct Builder {
 ///
 /// This is a shortcut for `Builder::new().handshake(io)`.
 /// See [`client::conn`](crate::client::conn) for more.
-pub async fn handshake<T, B>(
-    io: T,
-) -> crate::Result<(SendRequest<B>, Connection<T, B>)>
+pub async fn handshake<T, B>(io: T) -> crate::Result<(SendRequest<B>, Connection<T, B>)>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     B: Body + 'static,
@@ -133,7 +133,7 @@ where
     pub fn send_request(
         &mut self,
         req: Request<B>,
-    ) -> impl Future<Output = crate::Result<Response<IncomingBody>>> {
+    ) -> impl Future<Output = crate::Result<(Response<IncomingBody>, i64)>> {
         let sent = self.dispatch.send(req);
 
         async move {
@@ -291,10 +291,7 @@ impl Builder {
     /// Passing `None` will do nothing.
     ///
     /// If not set, hyper will use a default.
-    pub fn initial_connection_window_size(
-        &mut self,
-        sz: impl Into<Option<u32>>,
-    ) -> &mut Self {
+    pub fn initial_connection_window_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
         if let Some(sz) = sz.into() {
             self.h2_builder.adaptive_window = false;
             self.h2_builder.initial_conn_window_size = sz;
@@ -336,10 +333,7 @@ impl Builder {
     /// Pass `None` to disable HTTP2 keep-alive.
     ///
     /// Default is currently disabled.
-    pub fn keep_alive_interval(
-        &mut self,
-        interval: impl Into<Option<Duration>>,
-    ) -> &mut Self {
+    pub fn keep_alive_interval(&mut self, interval: impl Into<Option<Duration>>) -> &mut Self {
         self.h2_builder.keep_alive_interval = interval.into();
         self
     }
