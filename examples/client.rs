@@ -56,6 +56,11 @@ async fn fetch_url(url: hyper::Uri) -> Result<()> {
         .body(Empty::<Bytes>::new())?;
 
     let mut res = sender.send_request(req).await?;
+    let req = Request::builder()
+        .uri(url)
+        .header(hyper::header::HOST, authority.as_str())
+        .body("".to_string())?;
+    let x = sender.send_request(req).await?;
 
     println!("Response: {}", res.status());
     println!("Headers: {:#?}\n", res.headers());

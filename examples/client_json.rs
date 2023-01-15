@@ -44,10 +44,11 @@ async fn fetch_json(url: hyper::Uri) -> Result<Vec<User>> {
         .method("POST")
         .uri(url)
         .header(hyper::header::HOST, authority.as_str())
-        .body(Empty::<Bytes>::new())?;
+        .body("".to_string())?;
     // let (res, write_at) = sender.send_request(req).await?;
     let res = sender.send_request(req).await?;
 
+    
     // asynchronously aggregate the chunks of the body
     let _body = res.collect().await?.aggregate();
 
