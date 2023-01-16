@@ -48,7 +48,6 @@ async fn fetch_json(url: hyper::Uri) -> Result<Vec<User>> {
     // let (res, write_at) = sender.send_request(req).await?;
     let res = sender.send_request(req).await?;
 
-    
     // asynchronously aggregate the chunks of the body
     let _body = res.collect().await?.aggregate();
 
