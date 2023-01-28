@@ -3,7 +3,9 @@
 use std::error::Error as StdError;
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
+use std::task::Waker;
 use std::time::Duration;
 
 use http::{Request, Response};
@@ -20,16 +22,13 @@ use crate::proto;
 use crate::rt::{Executor, Timer};
 
 /// The sender side of an established connection.
+///
+#[derive(Clone)]
 pub struct SendRequest<B> {
+    waiting: Arc<AtomicU64>,
+    waker: Arc<Mutex<Option<Waker>>>,
+    waiting_lt: Arc<AtomicU64>,
     dispatch: dispatch::UnboundedSender<Request<B>, (Response<IncomingBody>, i64)>,
-}
-
-impl<B> Clone for SendRequest<B> {
-    fn clone(&self) -> SendRequest<B> {
-        SendRequest {
-            dispatch: self.dispatch.clone(),
-        }
-    }
 }
 
 /// A future that processes all HTTP state for the IO object.
@@ -83,11 +82,28 @@ impl<B> SendRequest<B> {
         }
     }
 
+    ///
+    pub fn poll_waiting(&mut self, cx: &mut task::Context<'_>, lt: u64) -> Poll<crate::Result<()>> {
+        if self.waiting.load(std::sync::atomic::Ordering::SeqCst) >= lt {
+            self.waiting_lt
+                .store(lt, std::sync::atomic::Ordering::SeqCst);
+            self.waker.lock().unwrap().insert(cx.waker().clone());
+            Poll::Pending
+        } else {
+            Poll::Ready(Ok(()))
+        }
+    }
+
     /// Waits until the dispatcher is ready
     ///
     /// If the associated connection is closed, this returns an Error.
     pub async fn ready(&mut self) -> crate::Result<()> {
         futures_util::future::poll_fn(|cx| self.poll_ready(cx)).await
+    }
+
+    ///
+    pub async fn waiting_lt(&mut self, lt: u64) -> crate::Result<()> {
+        futures_util::future::poll_fn(|cx| self.poll_waiting(cx, lt)).await
     }
 
     /*
@@ -114,6 +130,10 @@ impl<B> SendRequest<B>
 where
     B: Body + 'static,
 {
+    /// Return the currently waiting Request
+    pub fn waiting(&self) -> u64 {
+        self.waiting.load(std::sync::atomic::Ordering::SeqCst)
+    }
     /// Sends a `Request` on the associated connection.
     ///
     /// Returns a future that if successful, yields the `Response`.
@@ -135,17 +155,47 @@ where
         req: Request<B>,
     ) -> impl Future<Output = crate::Result<(Response<IncomingBody>, i64)>> {
         let sent = self.dispatch.send(req);
-        
+        self.waiting
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
+        let waker = self.waker.clone();
+        let waiting = self.waiting.clone();
+        let waiting_lt = self.waiting_lt.clone();
         async move {
             match sent {
                 Ok(rx) => match rx.await {
-                    Ok(Ok(resp)) => Ok(resp),
-                    Ok(Err(err)) => Err(err),
+                    Ok(Ok(resp)) => {
+                        let curr = waiting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
+                        if waker.lock().unwrap().is_some()
+                            && waiting_lt.load(std::sync::atomic::Ordering::SeqCst) > curr
+                        {
+                            let waker = waker.lock().unwrap().take().unwrap();
+                            waker.wake();
+                        }
+
+                        Ok(resp)
+                    }
+                    Ok(Err(err)) => {
+                        let curr = waiting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
+                        if waker.lock().unwrap().is_some()
+                            && waiting_lt.load(std::sync::atomic::Ordering::SeqCst) > curr
+                        {
+                            let waker = waker.lock().unwrap().take().unwrap();
+                            waker.wake();
+                        }
+                        Err(err)
+                    }
                     // this is definite bug if it happens, but it shouldn't happen!
                     Err(_canceled) => panic!("dispatch dropped without returning error"),
                 },
                 Err(_req) => {
+                    let curr = waiting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
+                    if waker.lock().unwrap().is_some()
+                        && waiting_lt.load(std::sync::atomic::Ordering::SeqCst) > curr
+                    {
+                        let waker = waker.lock().unwrap().take().unwrap();
+                        waker.wake();
+                    }
                     tracing::debug!("connection was not ready");
 
                     Err(crate::Error::new_canceled().with("connection was not ready"))
@@ -414,7 +464,10 @@ impl Builder {
                 .await?;
             Ok((
                 SendRequest {
+                    waiting: Arc::new(Default::default()),
                     dispatch: tx.unbound(),
+                    waiting_lt: Arc::new(Default::default()),
+                    waker: Arc::new(Mutex::new(None)),
                 },
                 Connection {
                     inner: (PhantomData, h2),
