@@ -21,7 +21,7 @@ type Dispatcher<T, B> =
 
 /// The sender side of an established connection.
 pub struct SendRequest<B> {
-    dispatch: dispatch::Sender<Request<B>, Response<IncomingBody>>,
+    dispatch: dispatch::Sender<Request<B>, (http::Response<IncomingBody>,i64)>,
 }
 
 /// Deconstructed parts of a `Connection`.
@@ -184,7 +184,7 @@ where
     pub fn send_request(
         &mut self,
         req: Request<B>,
-    ) -> impl Future<Output = crate::Result<Response<IncomingBody>>> {
+    ) -> impl Future<Output = crate::Result<(Response<IncomingBody>,i64)>> {
         let sent = self.dispatch.send(req);
 
         async move {

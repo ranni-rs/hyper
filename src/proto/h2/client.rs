@@ -13,8 +13,8 @@ use tracing::{debug, trace, warn};
 
 use super::{ping, H2Upgraded, PipeToSendStream, SendBuf};
 use crate::body::{Body, Incoming as IncomingBody};
-use crate::common::time::Time;
 use crate::client::dispatch::Callback;
+use crate::common::time::Time;
 use crate::common::{exec::Exec, task, Future, Never, Pin, Poll};
 use crate::ext::Protocol;
 use crate::headers;
@@ -24,7 +24,7 @@ use crate::upgrade::Upgraded;
 use crate::{Request, Response};
 use h2::client::ResponseFuture;
 
-type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, Response<IncomingBody>>;
+type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, (Response<IncomingBody>, i64)>;
 
 ///// An mpsc channel is used to help notify the `Connection` task when *all*
 ///// other handles to it have been dropped, so that it can shutdown.
@@ -197,7 +197,7 @@ where
     fut: ResponseFuture,
     body_tx: SendStream<SendBuf<B::Data>>,
     body: B,
-    cb: Callback<Request<B>, Response<IncomingBody>>,
+    cb: Callback<Request<B>, (Response<IncomingBody>, i64)>,
 }
 
 impl<B: Body> Unpin for FutCtx<B> {}
@@ -266,6 +266,7 @@ where
             Some(f.body_tx)
         };
 
+        let last_write_at = chrono::Local::now().timestamp_nanos();
         let fut = f.fut.map(move |result| match result {
             Ok(res) => {
                 // record that we got the response headers
@@ -297,13 +298,13 @@ where
                     pending.fulfill(upgraded);
                     res.extensions_mut().insert(on_upgrade);
 
-                    Ok(res)
+                    Ok((res, last_write_at))
                 } else {
                     let res = res.map(|stream| {
                         let ping = ping.for_stream(&stream);
                         IncomingBody::h2(stream, content_length.into(), ping)
                     });
-                    Ok(res)
+                    Ok((res, last_write_at))
                 }
             }
             Err(err) => {
