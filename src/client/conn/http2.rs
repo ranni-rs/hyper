@@ -58,7 +58,7 @@ pub struct Builder {
 ///
 /// This is a shortcut for `Builder::new().handshake(io)`.
 /// See [`client::conn`](crate::client::conn) for more.
-pub async fn handshake<E, T, B>(exec: E,io: T) -> crate::Result<(SendRequest<B>, Connection<T, B>)>
+pub async fn handshake<E, T, B>(exec: E, io: T) -> crate::Result<(SendRequest<B>, Connection<T, B>)>
 where
     E: Executor<BoxSendFuture> + Send + Sync + 'static,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -166,22 +166,23 @@ where
             match sent {
                 Ok(rx) => match rx.await {
                     Ok(Ok(resp)) => {
+                        let mut g = waker.lock().unwrap();
                         let curr = waiting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
-                        if waker.lock().unwrap().is_some()
+                        if g.is_some()
                             && waiting_lt.load(std::sync::atomic::Ordering::SeqCst) > curr
                         {
-                            let waker = waker.lock().unwrap().take().unwrap();
+                            let waker = g.take().unwrap();
                             waker.wake();
                         }
-
                         Ok(resp)
                     }
                     Ok(Err(err)) => {
+                        let mut g = waker.lock().unwrap();
                         let curr = waiting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
-                        if waker.lock().unwrap().is_some()
+                        if g.is_some()
                             && waiting_lt.load(std::sync::atomic::Ordering::SeqCst) > curr
                         {
-                            let waker = waker.lock().unwrap().take().unwrap();
+                            let waker = g.take().unwrap();
                             waker.wake();
                         }
                         Err(err)
@@ -190,11 +191,10 @@ where
                     Err(_canceled) => panic!("dispatch dropped without returning error"),
                 },
                 Err(_req) => {
+                    let mut g = waker.lock().unwrap();
                     let curr = waiting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
-                    if waker.lock().unwrap().is_some()
-                        && waiting_lt.load(std::sync::atomic::Ordering::SeqCst) > curr
-                    {
-                        let waker = waker.lock().unwrap().take().unwrap();
+                    if g.is_some() && waiting_lt.load(std::sync::atomic::Ordering::SeqCst) > curr {
+                        let waker = g.take().unwrap();
                         waker.wake();
                     }
                     tracing::debug!("connection was not ready");
@@ -296,7 +296,7 @@ where
 impl Builder {
     /// Creates a new connection builder.
     #[inline]
-    pub fn new<E>(exec: E) -> Builder 
+    pub fn new<E>(exec: E) -> Builder
     where
         E: Executor<BoxSendFuture> + Send + Sync + 'static,
     {
