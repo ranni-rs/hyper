@@ -2,8 +2,12 @@
 use std::error::Error as StdError;
 use std::fmt;
 
+use http::Request;
+
 /// Result type often returned from methods that can have hyper `Error`s.
 pub type Result<T> = std::result::Result<T, Error>;
+/// for ranni
+pub type Result2<T, B> = std::result::Result<T, (Error, Option<Request<B>>)>;
 
 type Cause = Box<dyn StdError + Send + Sync>;
 

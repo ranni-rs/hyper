@@ -63,7 +63,7 @@ pub use crate::http::{header, Method, Request, Response, StatusCode, Uri, Versio
 #[doc(no_inline)]
 pub use crate::http::HeaderMap;
 
-pub use crate::error::{Error, Result};
+pub use crate::error::{Error, Result, Result2};
 
 #[macro_use]
 mod cfg;

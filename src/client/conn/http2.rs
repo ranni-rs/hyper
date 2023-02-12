@@ -154,7 +154,7 @@ where
     pub fn send_request(
         &mut self,
         req: Request<B>,
-    ) -> impl Future<Output = crate::Result<(Response<IncomingBody>, i64)>> {
+    ) -> impl Future<Output = crate::error::Result2<(Response<IncomingBody>, i64), B>> {
         let sent = self.dispatch.send(req);
         self.waiting
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -185,12 +185,12 @@ where
                             let waker = g.take().unwrap();
                             waker.wake();
                         }
-                        Err(err)
+                        Err((err, None))
                     }
                     // this is definite bug if it happens, but it shouldn't happen!
                     Err(_canceled) => panic!("dispatch dropped without returning error"),
                 },
-                Err(_req) => {
+                Err(req) => {
                     let mut g = waker.lock().unwrap();
                     let curr = waiting.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
                     if g.is_some() && waiting_lt.load(std::sync::atomic::Ordering::SeqCst) > curr {
@@ -199,7 +199,10 @@ where
                     }
                     tracing::debug!("connection was not ready");
 
-                    Err(crate::Error::new_canceled().with("connection was not ready"))
+                    Err((
+                        crate::Error::new_canceled().with("connection was not ready"),
+                        Some(req),
+                    ))
                 }
             }
         }

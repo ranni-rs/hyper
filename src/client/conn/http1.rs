@@ -10,9 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::super::dispatch;
 use crate::body::{Body, Incoming as IncomingBody};
-use crate::common::{
-    task, Future, Pin, Poll,
-};
+use crate::common::{task, Future, Pin, Poll};
 use crate::proto;
 use crate::upgrade::Upgraded;
 
@@ -21,7 +19,7 @@ type Dispatcher<T, B> =
 
 /// The sender side of an established connection.
 pub struct SendRequest<B> {
-    dispatch: dispatch::Sender<Request<B>, (http::Response<IncomingBody>,i64)>,
+    dispatch: dispatch::Sender<Request<B>, (http::Response<IncomingBody>, i64)>,
 }
 
 /// Deconstructed parts of a `Connection`.
@@ -184,21 +182,24 @@ where
     pub fn send_request(
         &mut self,
         req: Request<B>,
-    ) -> impl Future<Output = crate::Result<(Response<IncomingBody>,i64)>> {
+    ) -> impl Future<Output = crate::Result2<(Response<IncomingBody>, i64), B>> {
         let sent = self.dispatch.send(req);
 
         async move {
             match sent {
                 Ok(rx) => match rx.await {
                     Ok(Ok(resp)) => Ok(resp),
-                    Ok(Err(err)) => Err(err),
+                    Ok(Err(err)) => Err((err, None)),
                     // this is definite bug if it happens, but it shouldn't happen!
                     Err(_canceled) => panic!("dispatch dropped without returning error"),
                 },
-                Err(_req) => {
+                Err(req) => {
                     tracing::debug!("connection was not ready");
 
-                    Err(crate::Error::new_canceled().with("connection was not ready"))
+                    Err((
+                        crate::Error::new_canceled().with("connection was not ready"),
+                        Some(req),
+                    ))
                 }
             }
         }
@@ -322,10 +323,7 @@ impl Builder {
     /// Default is false.
     ///
     /// [RFC 7230 Section 3.2.4.]: https://tools.ietf.org/html/rfc7230#section-3.2.4
-    pub fn allow_spaces_after_header_name_in_responses(
-        &mut self,
-        enabled: bool,
-    ) -> &mut Builder {
+    pub fn allow_spaces_after_header_name_in_responses(&mut self, enabled: bool) -> &mut Builder {
         self.h1_parser_config
             .allow_spaces_after_header_name_in_responses(enabled);
         self
@@ -363,10 +361,7 @@ impl Builder {
     /// Default is false.
     ///
     /// [RFC 7230 Section 3.2.4.]: https://tools.ietf.org/html/rfc7230#section-3.2.4
-    pub fn allow_obsolete_multiline_headers_in_responses(
-        &mut self,
-        enabled: bool,
-    ) -> &mut Builder {
+    pub fn allow_obsolete_multiline_headers_in_responses(&mut self, enabled: bool) -> &mut Builder {
         self.h1_parser_config
             .allow_obsolete_multiline_headers_in_responses(enabled);
         self
